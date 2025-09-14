@@ -4,7 +4,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DFW Locations — Bubble Map (v3)</title>
+<title>DFW Bubble Map - v1</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   html, body, #map { height: 100%; margin: 0; }
@@ -34,8 +34,8 @@ const chainColors = {
   "WP": "#6CA0DC"    // Lighter blue
 };
 
-const MIN_RADIUS = 6;
-const MAX_RADIUS = 28;
+const MIN_RADIUS = 3;
+const MAX_RADIUS = 50;
 const CHAIN_CODES = Object.keys(chainColors);
 
 function normalizeKey(k){ return String(k || '').trim().toLowerCase(); }
