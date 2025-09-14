@@ -4,7 +4,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DFW Locations — Bubble Map (v2)</title>
+<title>DFW Locations — Bubble Map (v3)</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   html, body, #map { height: 100%; margin: 0; }
@@ -36,35 +36,121 @@ const chainColors = {
 
 const MIN_RADIUS = 6;
 const MAX_RADIUS = 28;
+const CHAIN_CODES = Object.keys(chainColors);
+
+function normalizeKey(k){ return String(k || '').trim().toLowerCase(); }
 
 function parseNumber(val) {
   if (val == null) return NaN;
   if (typeof val === 'number') return val;
-  const s = String(val).replace(/[^0-9.\-]/g, '');
+  // keep digits, minus, dot, and comma; then remove thousands separators
+  let s = String(val);
+  // Replace common currency and spaces
+  s = s.replace(/\s+/g,'').replace(/[\$€£R\$]/g,'');
+  // Handle comma thousands and possible decimal: remove commas if they look like thousands
+  // e.g., "1,234,567.89" -> "1234567.89"
+  s = s.replace(/,(?=\d{3}(\D|$))/g, '');
+  // Replace remaining commas with dots (in case of "123,45")
+  if (s.indexOf('.') === -1 && s.indexOf(',') > -1) {
+    s = s.replace(/,/g, '.');
+  } else {
+    s = s.replace(/,/g, '');
+  }
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : NaN;
 }
 
+function findProp(p, candidates) {
+  // Try exact keys first, then case-insensitive by normalized key
+  // Finally try fuzzy contains for keys with slashes/spaces variants
+  const map = {};
+  for (const [k,v] of Object.entries(p)) map[normalizeKey(k)] = v;
+
+  for (const k of candidates) {
+    if (k in p) return p[k];
+  }
+  for (const k of candidates) {
+    const nk = normalizeKey(k);
+    if (nk in map) return map[nk];
+  }
+  // fuzzy: try to match by substring of the normalized key
+  for (const [k,v] of Object.entries(p)) {
+    const nk = normalizeKey(k);
+    if (candidates.some(c => nk.includes(normalizeKey(c)))) return v;
+  }
+  return undefined;
+}
+
 function getChainCode(p) {
-  const CODES = ["LC","MED","MEL","SO","VS","VW","WP"];
   const candidates = [
-    p.chain,
-    p._file,
-    p['chain'],
-    p['merged_Company/Business Name'],
-    p['Company/Business Name']
+    'chain', '_file',
+    'merged_Company/Business Name', 'Company/Business Name',
+    'merged_company/business name', 'company/business name'
   ];
-  for (let c of candidates) {
-    if (!c) continue;
-    const s = String(c).trim().toUpperCase();
-    // exact
-    if (CODES.includes(s)) return s;
-    // contains (e.g., "Store - LC")
-    for (const code of CODES) {
+  let val = findProp(p, candidates);
+  if (val) {
+    const s = String(val).trim().toUpperCase();
+    if (CHAIN_CODES.includes(s)) return s;
+    for (const code of CHAIN_CODES) {
+      if (s.includes(code)) return code;
+    }
+  }
+  // last resort: scan any property value to see if equals a chain code
+  for (const v of Object.values(p)) {
+    const s = String(v || '').toUpperCase();
+    if (CHAIN_CODES.includes(s)) return s;
+    for (const code of CHAIN_CODES) {
       if (s.includes(code)) return code;
     }
   }
   return null;
+}
+
+function getChainLabel(p, chainCode) {
+  const lab = findProp(p, ['merged_Company/Business Name', 'Company/Business Name', 'company', 'business name']);
+  if (lab) return lab;
+  return chainCode || 'N/A';
+}
+
+function getSalesNumber(p) {
+  // common numeric keys
+  const numericCandidates = [
+    'Sales Vol_num', 'Sales Vol', 'sales vol_num', 'sales vol',
+    'Sales Volume Num', 'sales volume num', 'SalesVolumeNum'
+  ];
+  let v = findProp(p, numericCandidates);
+  if (v !== undefined) {
+    const n = parseNumber(v);
+    if (Number.isFinite(n)) return n;
+  }
+  // fallback to formatted string fields (e.g., "$1,135,000")
+  const stringCandidates = ['merged_Sales Volume', 'Sales Volume', 'sales volume'];
+  v = findProp(p, stringCandidates);
+  if (v !== undefined) {
+    const n = parseNumber(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return NaN;
+}
+
+function getAddress(p) {
+  return findProp(p, ['address_geocoded', 'Address', 'address', 'endereco']) || 'Address not provided';
+}
+
+function computeMaxSales(features) {
+  let maxV = 0;
+  for (const f of features) {
+    const p = f.properties || {};
+    const n = getSalesNumber(p);
+    if (Number.isFinite(n) && n > maxV) maxV = n;
+  }
+  return maxV > 0 ? maxV : NaN;
+}
+
+function radiusFromSales(val, maxSales) {
+  if (!Number.isFinite(val) || val <= 0 || !Number.isFinite(maxSales) || maxSales <= 0) return MIN_RADIUS;
+  const r = Math.sqrt(val) / Math.sqrt(maxSales); // 0..1
+  return MIN_RADIUS + r * (MAX_RADIUS - MIN_RADIUS);
 }
 
 const map = L.map('map', { center: [32.9, -97.0], zoom: 9 });
@@ -91,35 +177,19 @@ legend.onAdd = function () {
 };
 legend.addTo(map);
 
-// Load GeoJSON, precompute max sales, then draw with normalized sqrt scaling
 fetch('vectors.geojson')
   .then(r => r.json())
   .then(geojson => {
     const feats = Array.isArray(geojson.features) ? geojson.features : [];
-    // Collect sales values
-    const salesVals = feats.map(f => {
-      const p = f.properties || {};
-      // Prefer numeric field, fallback to formatted string
-      return parseNumber(p['Sales Vol_num']) || parseNumber(p['Sales Vol']) || parseNumber(p['merged_Sales Volume']);
-    }).filter(v => Number.isFinite(v) && v > 0);
-
-    const maxSales = salesVals.length ? Math.max(...salesVals) : NaN;
-
-    function radiusFromSales(val) {
-      const v = parseNumber(val);
-      if (!Number.isFinite(v) || v <= 0 || !Number.isFinite(maxSales) || maxSales <= 0) return MIN_RADIUS;
-      const r = Math.sqrt(v) / Math.sqrt(maxSales); // 0..1
-      return MIN_RADIUS + r * (MAX_RADIUS - MIN_RADIUS);
-    }
+    const maxSales = computeMaxSales(feats);
 
     const layer = L.geoJSON(geojson, {
       pointToLayer: function(feature, latlng) {
         const p = feature.properties || {};
         const chain = getChainCode(p);
         const color = chainColors[chain] || '#666666';
-
-        const salesNum = parseNumber(p['Sales Vol_num']) || parseNumber(p['Sales Vol']) || parseNumber(p['merged_Sales Volume']);
-        const radius = radiusFromSales(salesNum);
+        const salesNum = getSalesNumber(p);
+        const radius = radiusFromSales(salesNum, maxSales);
 
         return L.circleMarker(latlng, {
           radius: radius,
@@ -132,11 +202,13 @@ fetch('vectors.geojson')
       onEachFeature: function(feature, layer) {
         const p = feature.properties || {};
         const chainCode = getChainCode(p) || '—';
-        const chainLabel = p['merged_Company/Business Name'] || chainCode || 'N/A';
-        const addr = p['address_geocoded'] || p['Address'] || 'Address not provided';
-        const salesNum = parseNumber(p['Sales Vol_num']) || parseNumber(p['Sales Vol']) || parseNumber(p['merged_Sales Volume']);
-        const salesStr = p['merged_Sales Volume'] || (Number.isFinite(salesNum) ? salesNum.toLocaleString() : '');
+        const chainLabel = getChainLabel(p, chainCode);
+        const addr = getAddress(p);
+        const salesNum = getSalesNumber(p);
         const hasSales = Number.isFinite(salesNum) && salesNum > 0;
+        // Prefer formatted field for display if present
+        const salesStrRaw = findProp(p, ['merged_Sales Volume', 'Sales Volume', 'sales volume']);
+        const salesStr = salesStrRaw ? String(salesStrRaw) : (hasSales ? salesNum.toLocaleString() : '');
 
         const popupHtml = `
           <div>
