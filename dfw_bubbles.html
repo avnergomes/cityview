@@ -4,7 +4,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DFW Locations — Bubble Map</title>
+<title>DFW Locations — Bubble Map (v2)</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   html, body, #map { height: 100%; margin: 0; }
@@ -25,23 +25,46 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const chainColors = {
-  "LC": "#808080",
-  "MED": "#003f7f",
-  "MEL": "#FFD700",
-  "SO": "#FF8C00",
-  "VS": "#228B22",
-  "VW": "#DC143C",
-  "WP": "#6CA0DC"
+  "LC": "#808080",   // Gray
+  "MED": "#003f7f",  // Darker blue
+  "MEL": "#FFD700",  // Yellow
+  "SO": "#FF8C00",   // Orange
+  "VS": "#228B22",   // Green
+  "VW": "#DC143C",   // Red
+  "WP": "#6CA0DC"    // Lighter blue
 };
 
 const MIN_RADIUS = 6;
 const MAX_RADIUS = 28;
 
-function radiusFromSales(val) {
-  if (!Number.isFinite(val) || val <= 0) return MIN_RADIUS;
-  const s = Math.sqrt(val);
-  const scaled = s / 500;
-  return Math.max(MIN_RADIUS, Math.min(MAX_RADIUS, scaled));
+function parseNumber(val) {
+  if (val == null) return NaN;
+  if (typeof val === 'number') return val;
+  const s = String(val).replace(/[^0-9.\-]/g, '');
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function getChainCode(p) {
+  const CODES = ["LC","MED","MEL","SO","VS","VW","WP"];
+  const candidates = [
+    p.chain,
+    p._file,
+    p['chain'],
+    p['merged_Company/Business Name'],
+    p['Company/Business Name']
+  ];
+  for (let c of candidates) {
+    if (!c) continue;
+    const s = String(c).trim().toUpperCase();
+    // exact
+    if (CODES.includes(s)) return s;
+    // contains (e.g., "Store - LC")
+    for (const code of CODES) {
+      if (s.includes(code)) return code;
+    }
+  }
+  return null;
 }
 
 const map = L.map('map', { center: [32.9, -97.0], zoom: 9 });
@@ -68,16 +91,36 @@ legend.onAdd = function () {
 };
 legend.addTo(map);
 
+// Load GeoJSON, precompute max sales, then draw with normalized sqrt scaling
 fetch('vectors.geojson')
   .then(r => r.json())
   .then(geojson => {
+    const feats = Array.isArray(geojson.features) ? geojson.features : [];
+    // Collect sales values
+    const salesVals = feats.map(f => {
+      const p = f.properties || {};
+      // Prefer numeric field, fallback to formatted string
+      return parseNumber(p['Sales Vol_num']) || parseNumber(p['Sales Vol']) || parseNumber(p['merged_Sales Volume']);
+    }).filter(v => Number.isFinite(v) && v > 0);
+
+    const maxSales = salesVals.length ? Math.max(...salesVals) : NaN;
+
+    function radiusFromSales(val) {
+      const v = parseNumber(val);
+      if (!Number.isFinite(v) || v <= 0 || !Number.isFinite(maxSales) || maxSales <= 0) return MIN_RADIUS;
+      const r = Math.sqrt(v) / Math.sqrt(maxSales); // 0..1
+      return MIN_RADIUS + r * (MAX_RADIUS - MIN_RADIUS);
+    }
+
     const layer = L.geoJSON(geojson, {
       pointToLayer: function(feature, latlng) {
         const p = feature.properties || {};
-        const chain = (p.chain || p._file || '').toString().trim();
+        const chain = getChainCode(p);
         const color = chainColors[chain] || '#666666';
-        let salesNum = parseFloat(p['Sales Vol_num']);
+
+        const salesNum = parseNumber(p['Sales Vol_num']) || parseNumber(p['Sales Vol']) || parseNumber(p['merged_Sales Volume']);
         const radius = radiusFromSales(salesNum);
+
         return L.circleMarker(latlng, {
           radius: radius,
           color: '#222',
@@ -88,28 +131,26 @@ fetch('vectors.geojson')
       },
       onEachFeature: function(feature, layer) {
         const p = feature.properties || {};
-        const chainCode = (p.chain || p._file || '').toString().trim();
-        const chainLabel = (p['merged_Company/Business Name'] || chainCode || 'N/A');
+        const chainCode = getChainCode(p) || '—';
+        const chainLabel = p['merged_Company/Business Name'] || chainCode || 'N/A';
         const addr = p['address_geocoded'] || p['Address'] || 'Address not provided';
-        const salesStr = p['merged_Sales Volume'] || '';
-        const salesNum = parseFloat(p['Sales Vol_num']);
+        const salesNum = parseNumber(p['Sales Vol_num']) || parseNumber(p['Sales Vol']) || parseNumber(p['merged_Sales Volume']);
+        const salesStr = p['merged_Sales Volume'] || (Number.isFinite(salesNum) ? salesNum.toLocaleString() : '');
         const hasSales = Number.isFinite(salesNum) && salesNum > 0;
 
         const popupHtml = `
           <div>
             <div><strong>Location:</strong> ${addr}</div>
-            <div><strong>Chain:</strong> ${chainLabel} (${chainCode || '—'})</div>
+            <div><strong>Chain:</strong> ${chainLabel} (${chainCode})</div>
             <div><strong>Sales:</strong> ${hasSales ? salesStr : '<span class="note">Sales data not available</span>'}</div>
           </div>
         `;
         layer.bindPopup(popupHtml);
-        layer.bindTooltip(chainCode ? chainCode : 'Location', {direction: 'top'});
+        layer.bindTooltip(chainCode, {direction: 'top'});
       }
     }).addTo(map);
 
-    try {
-      map.fitBounds(layer.getBounds().pad(0.15));
-    } catch (e) {}
+    try { map.fitBounds(layer.getBounds().pad(0.15)); } catch (e) {}
   })
   .catch(err => {
     console.error('Failed to load vectors.geojson:', err);
