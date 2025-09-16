@@ -1,10 +1,9 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DFW Bubble Map - v3</title>
+<title>DFW Bubble Map - v3 (filters)</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   html, body, #map { height: 100%; margin: 0; }
@@ -17,6 +16,16 @@
   .legend-swatch { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #333; }
   .leaflet-popup-content { font: 13px/1.3 system-ui, Arial, sans-serif; }
   .note { color: #a33; font-weight: 600; }
+
+  /* Filter control */
+  .chain-filter {
+    background: white; padding: 8px; border: 1px solid #ccc; border-radius: 6px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2); font-family: system-ui, Arial, sans-serif; font-size: 12px;
+    min-width: 180px;
+  }
+  .chain-filter h4 { margin: 0 0 6px; font-size: 13px; }
+  .chain-filter .actions { display: flex; gap: 6px; margin: 6px 0; }
+  .chain-filter select { width: 100%; }
 </style>
 </head>
 <body>
@@ -24,14 +33,16 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
+// --- COLORS (exact as requested) ---
 const chainColors = {
-  "LC": "#808080",   // Gray
-  "MED": "#003f7f",  // Darker blue
-  "MEL": "#FFD700",  // Yellow
-  "SO": "#FF8C00",   // Orange
-  "VS": "#228B22",   // Green
-  "VW": "#DC143C",   // Red
-  "WP": "#6CA0DC"    // Lighter blue
+  "LC":  "#808080", // Gray
+  "MED": "#003f7f", // darker blue
+  "MEL": "#FFD700", // Yellow
+  "SO":  "#FF8C00", // Orange
+  "PV":  "#228B22", // Green
+  "VS":  "#800080", // Purple
+  "VW":  "#DC143C", // Red
+  "WP":  "#6CA0DC"  // lighter blue
 };
 
 const MIN_RADIUS = 3;
@@ -43,14 +54,9 @@ function normalizeKey(k){ return String(k || '').trim().toLowerCase(); }
 function parseNumber(val) {
   if (val == null) return NaN;
   if (typeof val === 'number') return val;
-  // keep digits, minus, dot, and comma; then remove thousands separators
   let s = String(val);
-  // Replace common currency and spaces
   s = s.replace(/\s+/g,'').replace(/[\$€£R\$]/g,'');
-  // Handle comma thousands and possible decimal: remove commas if they look like thousands
-  // e.g., "1,234,567.89" -> "1234567.89"
   s = s.replace(/,(?=\d{3}(\D|$))/g, '');
-  // Replace remaining commas with dots (in case of "123,45")
   if (s.indexOf('.') === -1 && s.indexOf(',') > -1) {
     s = s.replace(/,/g, '.');
   } else {
@@ -61,19 +67,14 @@ function parseNumber(val) {
 }
 
 function findProp(p, candidates) {
-  // Try exact keys first, then case-insensitive by normalized key
-  // Finally try fuzzy contains for keys with slashes/spaces variants
   const map = {};
   for (const [k,v] of Object.entries(p)) map[normalizeKey(k)] = v;
 
-  for (const k of candidates) {
-    if (k in p) return p[k];
-  }
+  for (const k of candidates) { if (k in p) return p[k]; }
   for (const k of candidates) {
     const nk = normalizeKey(k);
     if (nk in map) return map[nk];
   }
-  // fuzzy: try to match by substring of the normalized key
   for (const [k,v] of Object.entries(p)) {
     const nk = normalizeKey(k);
     if (candidates.some(c => nk.includes(normalizeKey(c)))) return v;
@@ -95,7 +96,6 @@ function getChainCode(p) {
       if (s.includes(code)) return code;
     }
   }
-  // last resort: scan any property value to see if equals a chain code
   for (const v of Object.values(p)) {
     const s = String(v || '').toUpperCase();
     if (CHAIN_CODES.includes(s)) return s;
@@ -113,7 +113,6 @@ function getChainLabel(p, chainCode) {
 }
 
 function getSalesNumber(p) {
-  // common numeric keys
   const numericCandidates = [
     'Sales Vol_num', 'Sales Vol', 'sales vol_num', 'sales vol',
     'Sales Volume Num', 'sales volume num', 'SalesVolumeNum'
@@ -123,7 +122,6 @@ function getSalesNumber(p) {
     const n = parseNumber(v);
     if (Number.isFinite(n)) return n;
   }
-  // fallback to formatted string fields (e.g., "$1,135,000")
   const stringCandidates = ['merged_Sales Volume', 'Sales Volume', 'sales volume'];
   v = findProp(p, stringCandidates);
   if (v !== undefined) {
@@ -153,6 +151,7 @@ function radiusFromSales(val, maxSales) {
   return MIN_RADIUS + r * (MAX_RADIUS - MIN_RADIUS);
 }
 
+// --- MAP ---
 const map = L.map('map', { center: [32.9, -97.0], zoom: 9 });
 
 const streets = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
@@ -166,16 +165,87 @@ const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/servi
 
 L.control.layers({ "Streets": streets, "Satellite": satellite }, {}, { collapsed: true }).addTo(map);
 
+// --- LEGEND ---
 const legend = L.control({position: 'topright'});
 legend.onAdd = function () {
   const div = L.DomUtil.create('div', 'legend');
   div.innerHTML = '<h4>Chains</h4>' +
-    Object.entries(chainColors).map(([k, v]) => (
+    Object.entries(chainColors).map(([k, v]) =>
       `<div class="legend-item"><span class="legend-swatch" style="background:${v}"></span>${k}</div>`
-    )).join('');
+    ).join('');
   return div;
 };
 legend.addTo(map);
+
+// --- FILTER CONTROL (multi-select dropdown) ---
+let chainFilterControl;
+let selectedChains = new Set(CHAIN_CODES); // start with all selected
+
+function buildFilterControl() {
+  chainFilterControl = L.control({ position: 'topleft' });
+  chainFilterControl.onAdd = function() {
+    const div = L.DomUtil.create('div', 'chain-filter');
+    div.innerHTML = `
+      <h4>Filter chains</h4>
+      <div class="actions">
+        <button type="button" id="cf-select-all">Select all</button>
+        <button type="button" id="cf-clear">Clear</button>
+      </div>
+      <select id="cf-select" multiple size="${Math.min(8, CHAIN_CODES.length)}" aria-label="Chains">
+        ${CHAIN_CODES.map(c => `<option value="${c}" selected>${c}</option>`).join('')}
+      </select>
+    `;
+    // Prevent map drag when interacting
+    L.DomEvent.disableClickPropagation(div);
+    return div;
+  };
+  chainFilterControl.addTo(map);
+
+  const selectEl = document.getElementById('cf-select');
+  const btnAll = document.getElementById('cf-select-all');
+  const btnClear = document.getElementById('cf-clear');
+
+  function syncSelectedFromUI() {
+    selectedChains = new Set(Array.from(selectEl.selectedOptions).map(o => o.value));
+    applyChainFilter();
+  }
+  selectEl.addEventListener('change', syncSelectedFromUI);
+
+  btnAll.addEventListener('click', () => {
+    for (const opt of selectEl.options) opt.selected = true;
+    syncSelectedFromUI();
+  });
+  btnClear.addEventListener('click', () => {
+    for (const opt of selectEl.options) opt.selected = false;
+    syncSelectedFromUI();
+  });
+}
+
+buildFilterControl();
+
+// --- DATA LAYER & FILTERING ---
+let pointsLayer = null;
+
+function applyChainFilter() {
+  if (!pointsLayer) return;
+  pointsLayer.eachLayer(layer => {
+    const chain = layer.feature?.properties?._chain_code || null;
+    const show = chain && selectedChains.has(chain);
+    if (show) {
+      layer.addTo(pointsLayer); // ensure attached
+      layer.setStyle({ opacity: 1, fillOpacity: 0.85 });
+    } else {
+      // hide by making it fully transparent and removing from renderer
+      pointsLayer.removeLayer(layer);
+    }
+  });
+
+  // If everything hidden, skip fitBounds to avoid errors
+  try {
+    const b = pointsLayer.getBounds();
+    if (b.isValid()) map.fitBounds(b.pad(0.15));
+  } catch (e) {}
+}
 
 fetch('vectors.geojson')
   .then(r => r.json())
@@ -183,10 +253,16 @@ fetch('vectors.geojson')
     const feats = Array.isArray(geojson.features) ? geojson.features : [];
     const maxSales = computeMaxSales(feats);
 
-    const layer = L.geoJSON(geojson, {
+    // Precompute and store chain code on properties for fast filtering
+    for (const f of feats) {
+      const p = f.properties || (f.properties = {});
+      p._chain_code = getChainCode(p); // may be null
+    }
+
+    pointsLayer = L.geoJSON({ type: 'FeatureCollection', features: feats }, {
       pointToLayer: function(feature, latlng) {
         const p = feature.properties || {};
-        const chain = getChainCode(p);
+        const chain = p._chain_code;
         const color = chainColors[chain] || '#666666';
         const salesNum = getSalesNumber(p);
         const radius = radiusFromSales(salesNum, maxSales);
@@ -201,12 +277,11 @@ fetch('vectors.geojson')
       },
       onEachFeature: function(feature, layer) {
         const p = feature.properties || {};
-        const chainCode = getChainCode(p) || '—';
+        const chainCode = p._chain_code || '—';
         const chainLabel = getChainLabel(p, chainCode);
         const addr = getAddress(p);
         const salesNum = getSalesNumber(p);
         const hasSales = Number.isFinite(salesNum) && salesNum > 0;
-        // Prefer formatted field for display if present
         const salesStrRaw = findProp(p, ['merged_Sales Volume', 'Sales Volume', 'sales volume']);
         const salesStr = salesStrRaw ? String(salesStrRaw) : (hasSales ? salesNum.toLocaleString() : '');
 
@@ -222,7 +297,14 @@ fetch('vectors.geojson')
       }
     }).addTo(map);
 
-    try { map.fitBounds(layer.getBounds().pad(0.15)); } catch (e) {}
+    // Initial filter application (all selected)
+    applyChainFilter();
+
+    // Fit once on load
+    try {
+      const b = pointsLayer.getBounds();
+      if (b.isValid()) map.fitBounds(b.pad(0.15));
+    } catch (e) {}
   })
   .catch(err => {
     console.error('Failed to load vectors.geojson:', err);
