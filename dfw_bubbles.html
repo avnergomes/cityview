@@ -152,9 +152,16 @@ function radiusFromSales(val, maxSales) {
 // --- MAPA ---
 const map = L.map('map', { center: [32.9, -97.0], zoom: 9 });
 
-const streets = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
-  attribution: '© OpenStreetMap contributors © CARTO', maxZoom: 19
-}).addTo(map);
+// Mapa base claro (Esri Light Gray Canvas, sem chave de API) com rótulos por cima, em grupo
+// para o seletor de camadas trocar os dois juntos. Dados até por volta do zoom 16.
+const streets = L.layerGroup([
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors', maxZoom: 19, maxNativeZoom: 16
+  }),
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19, maxNativeZoom: 16
+  })
+]).addTo(map);
 
 const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
   attribution: 'Tiles © Esri — Sources: Esri, Maxar, Earthstar Geographics, USDA, USGS, AeroGRID, IGN, GIS User Community',
